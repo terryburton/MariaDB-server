@@ -1,0 +1,66 @@
+--source include/have_innodb.inc
+
+#
+# MDEV-25338 Add SKIP LOCKED to single-table UPDATE
+#
+# UPDATE ... SKIP LOCKED skips rows currently locked by another
+# transaction instead of waiting, mirroring
+# SELECT ... FOR UPDATE SKIP LOCKED (MDEV-13115).
+#
+
+connect (con1,localhost,root,,);
+SET SESSION innodb_lock_wait_timeout=1;
+
+connection default;
+SET SESSION innodb_lock_wait_timeout=1;
+CREATE TABLE t1 (
+  id INT PRIMARY KEY,
+  k  INT,
+  v  INT DEFAULT 0,
+  KEY (k)
+) ENGINE=InnoDB;
+INSERT INTO t1 (id, k) VALUES (1,10),(2,20),(3,30),(4,40),(5,50);
+
+--echo # con1 holds row locks on id=1 and id=2
+connection con1;
+BEGIN;
+SELECT id FROM t1 WHERE id IN (1,2) FOR UPDATE;
+
+connection default;
+--echo # a plain UPDATE over the locked rows waits and times out
+--error ER_LOCK_WAIT_TIMEOUT
+UPDATE t1 SET v=1 WHERE id <= 3;
+
+--echo # SKIP LOCKED skips the locked id=1,2 and updates id=3
+UPDATE t1 SET v=1 WHERE id <= 3 SKIP LOCKED;
+SELECT id, v FROM t1 ORDER BY id;
+
+--echo # RETURNING reports only the rows actually updated
+UPDATE t1 SET v=2 WHERE id <= 3 SKIP LOCKED RETURNING id, v;
+
+--echo # ORDER BY ... LIMIT ... SKIP LOCKED claims one free row
+UPDATE t1 SET v=9 WHERE v=0 ORDER BY id LIMIT 1 SKIP LOCKED RETURNING id;
+
+--echo # the bare form from the feature request updates all unlocked rows
+UPDATE t1 SET v=v+100 SKIP LOCKED;
+SELECT id, v FROM t1 ORDER BY id;
+
+connection con1;
+COMMIT;
+
+connection default;
+--echo # with no competing locks, SKIP LOCKED updates every matching row
+UPDATE t1 SET v=0 SKIP LOCKED;
+SELECT id, v FROM t1 ORDER BY id;
+
+--echo # multi-table UPDATE ... SKIP LOCKED is not supported
+CREATE TABLE t2 (id INT PRIMARY KEY) ENGINE=InnoDB;
+--error ER_NOT_SUPPORTED_YET
+UPDATE t1, t2 SET t1.v=0 WHERE t1.id=t2.id SKIP LOCKED;
+
+--echo # SKIP LOCKED must follow the WHERE/ORDER BY/LIMIT clauses
+--error ER_PARSE_ERROR
+UPDATE t1 SET v=0 SKIP LOCKED WHERE id=1;
+
+disconnect con1;
+DROP TABLE t1, t2;

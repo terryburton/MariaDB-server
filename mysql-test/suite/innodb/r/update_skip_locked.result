@@ -1,0 +1,69 @@
+connect  con1,localhost,root,,;
+SET SESSION innodb_lock_wait_timeout=1;
+connection default;
+SET SESSION innodb_lock_wait_timeout=1;
+CREATE TABLE t1 (
+id INT PRIMARY KEY,
+k  INT,
+v  INT DEFAULT 0,
+KEY (k)
+) ENGINE=InnoDB;
+INSERT INTO t1 (id, k) VALUES (1,10),(2,20),(3,30),(4,40),(5,50);
+# con1 holds row locks on id=1 and id=2
+connection con1;
+BEGIN;
+SELECT id FROM t1 WHERE id IN (1,2) FOR UPDATE;
+id
+1
+2
+connection default;
+# a plain UPDATE over the locked rows waits and times out
+UPDATE t1 SET v=1 WHERE id <= 3;
+ERROR HY000: Lock wait timeout exceeded; try restarting transaction
+# SKIP LOCKED skips the locked id=1,2 and updates id=3
+UPDATE t1 SET v=1 WHERE id <= 3 SKIP LOCKED;
+SELECT id, v FROM t1 ORDER BY id;
+id	v
+1	0
+2	0
+3	1
+4	0
+5	0
+# RETURNING reports only the rows actually updated
+UPDATE t1 SET v=2 WHERE id <= 3 SKIP LOCKED RETURNING id, v;
+id	v
+3	2
+# ORDER BY ... LIMIT ... SKIP LOCKED claims one free row
+UPDATE t1 SET v=9 WHERE v=0 ORDER BY id LIMIT 1 SKIP LOCKED RETURNING id;
+id
+4
+# the bare form from the feature request updates all unlocked rows
+UPDATE t1 SET v=v+100 SKIP LOCKED;
+SELECT id, v FROM t1 ORDER BY id;
+id	v
+1	0
+2	0
+3	102
+4	109
+5	100
+connection con1;
+COMMIT;
+connection default;
+# with no competing locks, SKIP LOCKED updates every matching row
+UPDATE t1 SET v=0 SKIP LOCKED;
+SELECT id, v FROM t1 ORDER BY id;
+id	v
+1	0
+2	0
+3	0
+4	0
+5	0
+# multi-table UPDATE ... SKIP LOCKED is not supported
+CREATE TABLE t2 (id INT PRIMARY KEY) ENGINE=InnoDB;
+UPDATE t1, t2 SET t1.v=0 WHERE t1.id=t2.id SKIP LOCKED;
+ERROR 42000: This version of MariaDB doesn't yet support 'SKIP LOCKED with multi-table UPDATE'
+# SKIP LOCKED must follow the WHERE/ORDER BY/LIMIT clauses
+UPDATE t1 SET v=0 SKIP LOCKED WHERE id=1;
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MariaDB server version for the right syntax to use near 'WHERE id=1' at line 1
+disconnect con1;
+DROP TABLE t1, t2;

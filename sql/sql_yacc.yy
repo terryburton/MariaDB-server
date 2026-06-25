@@ -14400,12 +14400,37 @@ update:
             slex->set_lock_for_tables($5, slex->table_list.elements == 1, false);
           }
           opt_where_clause opt_order_clause delete_limit_clause
+          opt_skip_locked
           {
             if ($12)
               Select->order_list= *($12);
           }
           opt_returning
           stmt_end {}
+        ;
+
+opt_skip_locked:
+          /* empty */ {}
+        | SKIP_SYM LOCKED_SYM
+          {
+            LEX *lex= Lex;
+            SELECT_LEX *slex= lex->first_select_lex();
+            /*
+              SKIP LOCKED on a single-table UPDATE: lock the target table with
+              TL_WRITE_SKIP_LOCKED so InnoDB skips rows locked by other
+              transactions (MDEV-25338). The set of modified rows is
+              non-deterministic, so the statement is unsafe for statement-based
+              binlogging, exactly like SELECT ... FOR UPDATE SKIP LOCKED.
+            */
+            if (slex->table_list.elements != 1)
+              my_yyabort_error((ER_NOT_SUPPORTED_YET, MYF(0),
+                               "SKIP LOCKED with multi-table UPDATE"));
+            TABLE_LIST *tl= slex->get_table_list();
+            tl->lock_type= TL_WRITE_SKIP_LOCKED;
+            tl->skip_locked= true;
+            slex->skip_locked= true;
+            lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_SKIP_LOCKED);
+          }
         ;
 
 update_list:
